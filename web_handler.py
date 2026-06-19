@@ -31,8 +31,21 @@ STATIC_DIR = BASE_DIR / "static"
 def make_app_handler(config: AppConfig):
     class LocalMovieHandler(BaseHTTPRequestHandler):
         server_version = "LocalMovie/1.0"
+        protocol_version = "HTTP/1.1"
+
+        def handle(self) -> None:
+            try:
+                super().handle()
+            except (BrokenPipeError, ConnectionAbortedError, ConnectionResetError):
+                return
 
         def do_GET(self) -> None:
+            self.dispatch_request(head_only=False)
+
+        def do_HEAD(self) -> None:
+            self.dispatch_request(head_only=True)
+
+        def dispatch_request(self, head_only: bool) -> None:
             parsed = urlparse(self.path)
             routes = {
                 "/": self.handle_index,
@@ -44,10 +57,10 @@ def make_app_handler(config: AppConfig):
             }
             handler = routes.get(parsed.path)
             if handler is not None:
-                handler(parse_qs(parsed.query))
+                handler(parse_qs(parsed.query), head_only)
                 return
             if parsed.path.startswith("/static/"):
-                self.handle_static(parsed.path)
+                self.handle_static(parsed.path, head_only)
                 return
             self.send_error(HTTPStatus.NOT_FOUND, "Not found")
 
@@ -57,7 +70,7 @@ def make_app_handler(config: AppConfig):
                 % (self.client_address[0], self.log_date_time_string(), format % args)
             )
 
-        def handle_index(self, query: dict[str, list[str]]) -> None:
+        def handle_index(self, query: dict[str, list[str]], head_only: bool = False) -> None:
             rows = []
             for index, root in enumerate(config.directories):
                 exists_label = "" if root.exists() and root.is_dir() else "（目录不存在）"
@@ -69,9 +82,9 @@ def make_app_handler(config: AppConfig):
                         "folder",
                     )
                 )
-            self.send_html(escape("本地视频"), render_index("".join(rows)))
+            self.send_html(escape("本地视频"), render_index("".join(rows)), head_only)
 
-        def handle_browse(self, query: dict[str, list[str]]) -> None:
+        def handle_browse(self, query: dict[str, list[str]], head_only: bool = False) -> None:
             try:
                 root_index, relative, current = self.resolve_query_path(query, allow_file=False)
             except ValueError:
@@ -149,9 +162,9 @@ def make_app_handler(config: AppConfig):
                 pager,
                 empty,
             )
-            self.send_html(escape(root.name or str(root)), body)
+            self.send_html(escape(root.name or str(root)), body, head_only)
 
-        def handle_watch(self, query: dict[str, list[str]]) -> None:
+        def handle_watch(self, query: dict[str, list[str]], head_only: bool = False) -> None:
             try:
                 root_index, relative, current = self.resolve_query_path(query, allow_file=True)
             except ValueError:
@@ -180,9 +193,9 @@ def make_app_handler(config: AppConfig):
                 video_url,
                 tracks,
             )
-            self.send_html(escape(current.name), body)
+            self.send_html(escape(current.name), body, head_only)
 
-        def handle_video(self, query: dict[str, list[str]]) -> None:
+        def handle_video(self, query: dict[str, list[str]], head_only: bool = False) -> None:
             try:
                 _, _, current = self.resolve_query_path(query, allow_file=True)
             except ValueError:
@@ -193,9 +206,9 @@ def make_app_handler(config: AppConfig):
                 self.send_error(HTTPStatus.NOT_FOUND, "Video not found")
                 return
 
-            self.stream_file(current)
+            self.stream_file(current, head_only)
 
-        def handle_subtitle(self, query: dict[str, list[str]]) -> None:
+        def handle_subtitle(self, query: dict[str, list[str]], head_only: bool = False) -> None:
             try:
                 _, _, current = self.resolve_query_path(query, allow_file=True)
             except ValueError:
@@ -216,20 +229,23 @@ def make_app_handler(config: AppConfig):
             self.send_header("Content-Type", "text/vtt; charset=utf-8")
             self.send_header("Content-Length", str(len(payload)))
             self.end_headers()
-            self.wfile.write(payload)
+            if not head_only:
+                self.wfile.write(payload)
 
-        def handle_legacy_css(self, query: dict[str, list[str]]) -> None:
-            self.serve_static_file(STATIC_DIR / "style.css", "text/css; charset=utf-8")
+        def handle_legacy_css(self, query: dict[str, list[str]], head_only: bool = False) -> None:
+            self.serve_static_file(
+                STATIC_DIR / "style.css", head_only, "text/css; charset=utf-8"
+            )
 
-        def handle_static(self, request_path: str) -> None:
+        def handle_static(self, request_path: str, head_only: bool = False) -> None:
             relative = request_path.removeprefix("/static/").replace("\\", "/")
             if not relative or "/" in relative or relative in {".", ".."}:
                 self.send_error(HTTPStatus.NOT_FOUND, "Static file not found")
                 return
-            self.serve_static_file(STATIC_DIR / relative)
+            self.serve_static_file(STATIC_DIR / relative, head_only)
 
         def serve_static_file(
-            self, path: Path, content_type: str | None = None
+            self, path: Path, head_only: bool = False, content_type: str | None = None
         ) -> None:
             try:
                 resolved = path.resolve()
@@ -252,7 +268,8 @@ def make_app_handler(config: AppConfig):
             self.send_header("Content-Type", content_type)
             self.send_header("Content-Length", str(len(payload)))
             self.end_headers()
-            self.wfile.write(payload)
+            if not head_only:
+                self.wfile.write(payload)
 
         def resolve_query_path(
             self, query: dict[str, list[str]], allow_file: bool
@@ -281,9 +298,9 @@ def make_app_handler(config: AppConfig):
                 raise ValueError("路径不是目录")
             return root_index, relative, current
 
-        def stream_file(self, path: Path) -> None:
+        def stream_file(self, path: Path, head_only: bool = False) -> None:
             total_size = path.stat().st_size
-            content_type = mimetypes.guess_type(path.name)[0] or "application/octet-stream"
+            content_type = media_content_type(path)
             range_header = self.headers.get("Range")
             start = 0
             end = total_size - 1
@@ -308,6 +325,9 @@ def make_app_handler(config: AppConfig):
                 self.send_header("Content-Range", f"bytes {start}-{end}/{total_size}")
             self.end_headers()
 
+            if head_only:
+                return
+
             with path.open("rb") as file:
                 file.seek(start)
                 remaining = length
@@ -321,12 +341,30 @@ def make_app_handler(config: AppConfig):
                         return
                     remaining -= len(chunk)
 
-        def send_html(self, title: str, body: str) -> None:
+        def send_html(self, title: str, body: str, head_only: bool = False) -> None:
             payload = render_page(title, body).encode("utf-8")
             self.send_response(HTTPStatus.OK)
             self.send_header("Content-Type", "text/html; charset=utf-8")
             self.send_header("Content-Length", str(len(payload)))
             self.end_headers()
-            self.wfile.write(payload)
+            if not head_only:
+                self.wfile.write(payload)
 
     return LocalMovieHandler
+
+
+def media_content_type(path: Path) -> str:
+    explicit = {
+        ".mp4": "video/mp4",
+        ".m4v": "video/mp4",
+        ".mov": "video/quicktime",
+        ".webm": "video/webm",
+        ".mkv": "video/x-matroska",
+        ".avi": "video/x-msvideo",
+        ".wmv": "video/x-ms-wmv",
+        ".flv": "video/x-flv",
+    }
+    return explicit.get(
+        path.suffix.lower(),
+        mimetypes.guess_type(path.name)[0] or "application/octet-stream",
+    )
