@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import json
 import mimetypes
 import sys
 from http import HTTPStatus
@@ -8,13 +9,23 @@ from pathlib import Path, PurePosixPath
 from urllib.parse import parse_qs, urlparse
 
 from app_config import AppConfig
+from favorites import load_favorites, toggle_favorite
 from html_utils import escape
-from media import CHUNK_SIZE, file_size, is_video, list_directory, parse_range
+from media import (
+    CHUNK_SIZE,
+    file_size,
+    filename_sort_key,
+    is_video,
+    list_directory,
+    parse_range,
+)
 from routing import build_query, first, join_rel, normalize_relative_path, positive_int
 from subtitles import find_subtitle, srt_to_vtt
 from templates import (
     render_breadcrumb,
     render_browse,
+    render_favorite_group,
+    render_favorites,
     render_index,
     render_page,
     render_pager,
@@ -45,11 +56,19 @@ def make_app_handler(config: AppConfig):
         def do_HEAD(self) -> None:
             self.dispatch_request(head_only=True)
 
+        def do_POST(self) -> None:
+            parsed = urlparse(self.path)
+            if parsed.path == "/api/favorite":
+                self.handle_favorite_api()
+                return
+            self.send_error(HTTPStatus.NOT_FOUND, "Not found")
+
         def dispatch_request(self, head_only: bool) -> None:
             parsed = urlparse(self.path)
             routes = {
                 "/": self.handle_index,
                 "/browse": self.handle_browse,
+                "/favorites": self.handle_favorites,
                 "/watch": self.handle_watch,
                 "/video": self.handle_video,
                 "/subtitle": self.handle_subtitle,
@@ -101,7 +120,7 @@ def make_app_handler(config: AppConfig):
             entries = sorted(
                 [("folder", path) for path in directories]
                 + [("video", path) for path in videos],
-                key=lambda item: item[1].name.casefold(),
+                key=lambda item: filename_sort_key(item[1].name),
             )
             start = (page - 1) * config.videos_per_page
             end = start + config.videos_per_page
@@ -112,6 +131,7 @@ def make_app_handler(config: AppConfig):
 
             root = config.directories[root_index]
             breadcrumb = render_breadcrumb(root_index, relative)
+            favorites = load_favorites()
             rows = []
             if relative:
                 parent_rel = str(PurePosixPath(relative).parent)
@@ -138,13 +158,18 @@ def make_app_handler(config: AppConfig):
                         )
                     )
                 else:
+                    video_relative = join_rel(relative, path.name)
                     rows.append(
                         render_row(
                             escape(path.name),
                             "/watch?"
-                            + build_query(root_index, join_rel(relative, path.name)),
+                            + build_query(root_index, video_relative),
                             file_size(path),
-                            "video",
+                            (
+                                "favorite"
+                                if (root_index, video_relative) in favorites
+                                else "video"
+                            ),
                         )
                     )
             pager = render_pager(root_index, relative, page, total_pages)
@@ -163,6 +188,50 @@ def make_app_handler(config: AppConfig):
                 empty,
             )
             self.send_html(escape(root.name or str(root)), body, head_only)
+
+        def handle_favorites(
+            self, query: dict[str, list[str]], head_only: bool = False
+        ) -> None:
+            groups: dict[tuple[int, str], list[tuple[Path, str]]] = {}
+            for root_index, relative in load_favorites():
+                try:
+                    normalized, current = self.resolve_favorite_path(root_index, relative)
+                except ValueError:
+                    continue
+                if is_video(current, config.extensions):
+                    parent = PurePosixPath(normalized).parent.as_posix()
+                    if parent == ".":
+                        parent = ""
+                    groups.setdefault((root_index, parent), []).append(
+                        (current, normalized)
+                    )
+
+            sections = []
+            sorted_groups = sorted(
+                groups.items(),
+                key=lambda item: filename_sort_key(
+                    f"{config.directories[item[0][0]].name} / {item[0][1]}"
+                ),
+            )
+            for (root_index, parent), videos in sorted_groups:
+                root_name = config.directories[root_index].name
+                title = root_name if not parent else f"{root_name} / {parent}"
+                rows = [
+                    render_row(
+                        escape(current.name),
+                        "/watch?" + build_query(root_index, relative),
+                        escape(relative),
+                        "video",
+                    )
+                    for current, relative in sorted(
+                        videos, key=lambda item: filename_sort_key(item[0].name)
+                    )
+                ]
+                sections.append(render_favorite_group(escape(title), "".join(rows)))
+
+            self.send_html(
+                "我的收藏", render_favorites("".join(sections)), head_only
+            )
 
         def handle_watch(self, query: dict[str, list[str]], head_only: bool = False) -> None:
             try:
@@ -192,8 +261,35 @@ def make_app_handler(config: AppConfig):
                 escape(str(current)),
                 video_url,
                 tracks,
+                root_index,
+                escape(relative),
+                (root_index, relative) in load_favorites(),
             )
             self.send_html(escape(current.name), body, head_only)
+
+        def handle_favorite_api(self) -> None:
+            try:
+                content_length = int(self.headers.get("Content-Length", "0"))
+                if content_length <= 0 or content_length > 64 * 1024:
+                    raise ValueError("Invalid request body")
+                payload = json.loads(self.rfile.read(content_length).decode("utf-8"))
+                root_index = payload.get("root")
+                relative = payload.get("path")
+                if type(root_index) is not int or not isinstance(relative, str):
+                    raise ValueError("Invalid favorite")
+                normalized, current = self.resolve_favorite_path(root_index, relative)
+                if not is_video(current, config.extensions):
+                    raise ValueError("Video not found")
+            except (AttributeError, UnicodeDecodeError, ValueError, json.JSONDecodeError):
+                self.send_error(HTTPStatus.BAD_REQUEST, "Bad request")
+                return
+
+            try:
+                favorite = toggle_favorite(root_index, normalized)
+            except OSError:
+                self.send_error(HTTPStatus.INTERNAL_SERVER_ERROR, "Unable to save favorite")
+                return
+            self.send_json({"favorite": favorite})
 
         def handle_video(self, query: dict[str, list[str]], head_only: bool = False) -> None:
             try:
@@ -298,6 +394,24 @@ def make_app_handler(config: AppConfig):
                 raise ValueError("路径不是目录")
             return root_index, relative, current
 
+        def resolve_favorite_path(self, root_index: int, relative: str) -> tuple[str, Path]:
+            if root_index < 0 or root_index >= len(config.directories):
+                raise ValueError("root 参数超出范围")
+            value = relative.replace("\\", "/").strip("/")
+            pure = PurePosixPath(value)
+            if not value or pure.is_absolute() or any(
+                part in {"", ".", ".."} for part in pure.parts
+            ):
+                raise ValueError("非法路径")
+
+            root = config.directories[root_index]
+            current = (root / Path(*pure.parts)).resolve()
+            try:
+                current.relative_to(root)
+            except ValueError as exc:
+                raise ValueError("非法路径") from exc
+            return pure.as_posix(), current
+
         def stream_file(self, path: Path, head_only: bool = False) -> None:
             total_size = path.stat().st_size
             content_type = media_content_type(path)
@@ -349,6 +463,15 @@ def make_app_handler(config: AppConfig):
             self.end_headers()
             if not head_only:
                 self.wfile.write(payload)
+
+        def send_json(self, value: object) -> None:
+            payload = json.dumps(value, ensure_ascii=False).encode("utf-8")
+            self.send_response(HTTPStatus.OK)
+            self.send_header("Content-Type", "application/json; charset=utf-8")
+            self.send_header("Content-Length", str(len(payload)))
+            self.send_header("Cache-Control", "no-store")
+            self.end_headers()
+            self.wfile.write(payload)
 
     return LocalMovieHandler
 

@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import re
 import socket
 from pathlib import Path
 
@@ -23,6 +24,19 @@ def is_video(path: Path, extensions: frozenset[str]) -> bool:
     return path.is_file() and path.suffix.lower() in extensions
 
 
+def natural_sort_key(value: str) -> tuple[tuple[int, int | str], ...]:
+    return tuple(
+        (1, int(part)) if part.isdigit() else (0, part.casefold())
+        for part in re.split(r"(\d+)", value)
+    )
+
+
+def filename_sort_key(
+    value: str,
+) -> tuple[int, tuple[tuple[int, int | str], ...]]:
+    return -value.count("★"), natural_sort_key(value)
+
+
 def list_directory(path: Path) -> tuple[list[Path], list[Path]]:
     directories: list[Path] = []
     files: list[Path] = []
@@ -35,7 +49,7 @@ def list_directory(path: Path) -> tuple[list[Path], list[Path]]:
     except OSError:
         return [], []
 
-    key = lambda item: item.name.casefold()
+    key = lambda item: filename_sort_key(item.name)
     return sorted(directories, key=key), sorted(files, key=key)
 
 

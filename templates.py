@@ -45,12 +45,27 @@ def render_browse(
     )
 
 
+def render_favorites(rows: str) -> str:
+    return render_template(
+        "favorites.html",
+        rows=rows
+        or '<div class="panel"><div class="empty">还没有收藏视频。</div></div>',
+    )
+
+
+def render_favorite_group(title: str, rows: str) -> str:
+    return render_template("favorite_group.html", title=title, rows=rows)
+
+
 def render_watch(
     back_url: str,
     title: str,
     path: str,
     video_url: str,
     tracks: str,
+    root_index: int,
+    relative: str,
+    is_favorite: bool,
 ) -> str:
     return render_template(
         "watch.html",
@@ -59,6 +74,12 @@ def render_watch(
         path=path,
         video_url=video_url,
         tracks=tracks,
+        root_index=root_index,
+        relative=relative,
+        favorite_class=" is-favorite" if is_favorite else "",
+        favorite_icon="★" if is_favorite else "☆",
+        favorite_pressed="true" if is_favorite else "false",
+        favorite_label="取消收藏" if is_favorite else "收藏视频",
     )
 
 
@@ -67,10 +88,11 @@ def render_subtitle_track(subtitle_url: str) -> str:
 
 
 def render_row(name: str, href: str, detail: str, kind: str) -> str:
-    icons = {"folder": "📁", "video": "▶", "up": "↩"}
+    icons = {"folder": "📁", "video": "▶", "favorite": "★", "up": "↩"}
     return render_template(
         "row.html",
         icon=icons.get(kind, ""),
+        icon_class=" icon--favorite" if kind == "favorite" else "",
         name=name,
         href=href,
         detail=detail,

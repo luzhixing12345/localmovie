@@ -206,6 +206,10 @@ tempCodeRunnerFile.py
 # Ruff stuff:
 .ruff_cache/
 
+# Local user data
+.favorites.json
+.favorites.json.tmp
+
 # PyPI configuration file
 .pypirc
 
