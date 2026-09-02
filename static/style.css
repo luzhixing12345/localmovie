@@ -58,6 +58,12 @@ header {
     gap: 12px;
 }
 
+.directory-actions {
+    display: flex;
+    align-items: center;
+    gap: 8px;
+}
+
 h1 {
     margin: 14px 0 6px;
     font-size: clamp(28px, 5vw, 40px);
@@ -106,6 +112,7 @@ h1 {
 
 .row:focus-visible,
 .back:focus-visible,
+.random-link:focus-visible,
 .favorites-link:focus-visible,
 .pager a:focus-visible,
 .crumbs a:focus-visible,
@@ -149,6 +156,7 @@ small {
 }
 
 .back,
+.random-link,
 .favorites-link,
 .pager a {
     display: inline-flex;
@@ -169,8 +177,28 @@ small {
     margin-left: -11px;
 }
 
+.random-link {
+    width: 36px;
+    padding: 0;
+    background: var(--card);
+    border: 1px solid var(--border);
+    box-shadow: 0 1px 2px rgba(0, 0, 0, 0.04);
+}
+
+.random-link svg {
+    width: 17px;
+    height: 17px;
+    fill: none;
+    stroke: currentColor;
+    stroke-width: 1.8;
+    stroke-linecap: round;
+    stroke-linejoin: round;
+}
+
 .back:hover,
 .back:active,
+.random-link:hover,
+.random-link:active,
 .pager a:hover,
 .pager a:active {
     background: var(--accent);

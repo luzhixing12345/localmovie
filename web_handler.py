@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import json
 import mimetypes
+import secrets
 import sys
 from http import HTTPStatus
 from http.server import BaseHTTPRequestHandler
@@ -69,6 +70,7 @@ def make_app_handler(config: AppConfig):
                 "/": self.handle_index,
                 "/browse": self.handle_browse,
                 "/favorites": self.handle_favorites,
+                "/random": self.handle_random,
                 "/watch": self.handle_watch,
                 "/video": self.handle_video,
                 "/subtitle": self.handle_subtitle,
@@ -181,6 +183,7 @@ def make_app_handler(config: AppConfig):
 
             body = render_browse(
                 "/",
+                "/random?" + build_query(root_index, relative),
                 escape(current.name or str(root)),
                 breadcrumb,
                 "".join(rows),
@@ -232,6 +235,43 @@ def make_app_handler(config: AppConfig):
             self.send_html(
                 "我的收藏", render_favorites("".join(sections)), head_only
             )
+
+        def handle_random(
+            self, query: dict[str, list[str]], head_only: bool = False
+        ) -> None:
+            try:
+                root_index, _, current = self.resolve_query_path(
+                    query, allow_file=False
+                )
+            except ValueError:
+                self.send_error(HTTPStatus.BAD_REQUEST, "Bad request")
+                return
+
+            if not current.exists() or not current.is_dir():
+                self.send_error(HTTPStatus.NOT_FOUND, "Directory not found")
+                return
+
+            try:
+                videos = [
+                    path
+                    for path in current.rglob("*")
+                    if is_video(path, config.extensions)
+                ]
+            except OSError:
+                videos = []
+
+            if not videos:
+                self.send_error(HTTPStatus.NOT_FOUND, "No videos found")
+                return
+
+            root = config.directories[root_index]
+            relative = secrets.choice(videos).relative_to(root).as_posix()
+            self.send_response(HTTPStatus.FOUND)
+            self.send_header(
+                "Location", "/watch?" + build_query(root_index, relative)
+            )
+            self.send_header("Content-Length", "0")
+            self.end_headers()
 
         def handle_watch(self, query: dict[str, list[str]], head_only: bool = False) -> None:
             try:

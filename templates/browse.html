@@ -1,7 +1,15 @@
 <header>
     <div class="header-actions">
         <a class="back" href="{back_url}">← 全部目录</a>
-        <a class="favorites-link" href="/favorites">★ 查看收藏</a>
+        <div class="directory-actions">
+            <a class="random-link" href="{random_url}" aria-label="随机播放当前目录中的视频"
+               title="随机播放当前目录及子目录中的视频">
+                <svg viewBox="0 0 24 24" aria-hidden="true">
+                    <path d="M16 3h5v5M4 20 21 3M21 16v5h-5M15 15l6 6M4 4l5 5"/>
+                </svg>
+            </a>
+            <a class="favorites-link" href="/favorites">★ 查看收藏</a>
+        </div>
     </div>
     <h1>{title}</h1>
     {breadcrumb}

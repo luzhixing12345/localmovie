@@ -28,6 +28,7 @@ def render_index(rows: str) -> str:
 
 def render_browse(
     back_url: str,
+    random_url: str,
     title: str,
     breadcrumb: str,
     rows: str,
@@ -37,6 +38,7 @@ def render_browse(
     return render_template(
         "browse.html",
         back_url=back_url,
+        random_url=random_url,
         title=title,
         breadcrumb=breadcrumb,
         rows=rows,
